@@ -1,0 +1,4 @@
+# Пример inventory: хост(ы), на которых крутится Nginx перед приложением.
+# При docker-хостинге это та машина, где запущен docker-compose.
+[web]
+app-server ansible_host=192.0.2.10 ansible_user=deploy

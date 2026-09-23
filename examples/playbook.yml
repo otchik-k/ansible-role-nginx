@@ -1,0 +1,30 @@
+---
+# Плейбук: Nginx как reverse proxy перед контейнерным приложением.
+#
+#   ansible-galaxy install -r examples/requirements.yml
+#   ansible-playbook -i examples/inventory examples/playbook.yml
+#
+# Настройки (upstream, кеш, статика) вынесены в examples/group_vars/web.yml.
+- name: Configure Nginx reverse proxy for a containerized app
+  hosts: web
+  become: true
+
+  pre_tasks:
+    # Роль создаёт только конфиг; каталог прокси-кеша nginx не создаёт сам,
+    # иначе на первом же reload будет "No such file or directory".
+    - name: Ensure proxy cache directory exists.
+      file:
+        path: "{{ nginx_proxy_cache_path.split(' ')[0] }}"
+        state: directory
+        owner: "{{ nginx_user | default('nginx') }}"
+        group: "{{ nginx_user | default('nginx') }}"
+        mode: "0700"
+      when: nginx_proxy_cache_path | length > 0
+
+  roles:
+    - role: geerlingguy.nginx
+
+  post_tasks:
+    - name: Validate nginx configuration.
+      command: nginx -t
+      changed_when: false

@@ -1,0 +1,5 @@
+---
+# Роли плейбука examples/playbook.yml
+roles:
+  - name: geerlingguy.nginx
+    version: latest
