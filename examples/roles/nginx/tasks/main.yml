@@ -1,0 +1,108 @@
+---
+# Самодостаточная роль "nginx": установка nginx + reverse proxy к контейнерному
+# приложению + прокси-кеш + раздача статики/загрузок.
+#
+# Использование в вашем плейбуке:
+#   roles:
+#     - configure-srv
+#     - deploy-sql
+#     - s3-storage
+#     - deploy-app
+#     - nginx        # ← просто добавляете роль, ansible выполнит tasks/main.yml
+#
+# Все настройки — переменные, значения по умолчанию в defaults/main.yml,
+# их можно переопределить в group_vars/my_hosts.yml.
+# Шаблоны конфигурации — в templates/ (роль полностью автономна, никаких
+# ansible-galaxy и внешних зависимостей не требуется).
+
+# --- 1. Переменные в зависимости от ОС --------------------------------------
+- name: Include OS-specific variables.
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_facts.distribution | lowercase }}.yml"
+        - "{{ ansible_facts.os_family | lowercase }}.yml"
+        - default.yml
+      skip: true
+
+# --- 2. Установка nginx -------------------------------------------------------
+- name: Update apt cache.
+  apt:
+    update_cache: true
+    cache_valid_time: 86400
+  changed_when: false
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure nginx is installed (apt).
+  apt:
+    name: "{{ nginx_package_name }}"
+    state: present
+  when: ansible_facts.os_family == 'Debian'
+
+- name: Ensure nginx is installed (dnf/yum).
+  package:
+    name: "{{ nginx_package_name }}"
+    state: present
+  when: ansible_facts.os_family == 'RedHat'
+
+# --- 3. Каталоги (кеш, статика, медиа) ----------------------------------------
+# Каталог прокси-кеша nginx не создаёт сам — без него reload упадёт с
+# "No such file or directory". Статика/медиа расшариваются контейнером
+# через volumes, но на хосте они тоже должны существовать.
+- name: Ensure proxy cache directory exists.
+  file:
+    path: "{{ nginx_proxy_cache_path.split(' ')[0] }}"
+    state: directory
+    mode: "0755"
+  when: nginx_proxy_cache_path | length > 0
+
+- name: Ensure static and media directories exist.
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ nginx_app_static_root }}"
+    - "{{ nginx_app_media_root }}"
+
+- name: Ensure vhost config directory exists.
+  file:
+    path: "{{ nginx_vhost_path }}"
+    state: directory
+    mode: "0755"
+
+# --- 4. Конфигурация ----------------------------------------------------------
+- name: Copy nginx.conf in place.
+  template:
+    src: nginx.conf.j2
+    dest: "{{ nginx_conf_file_path }}"
+    owner: root
+    group: "{{ nginx_root_group }}"
+    mode: "0644"
+    validate: nginx -t -c %s
+  notify: restart nginx
+
+- name: Add managed vhost config files.
+  template:
+    src: "{{ item.template | default('vhost.j2') }}"
+    dest: "{{ nginx_vhost_path }}/{{ item.filename | default(item.server_name ~ '.conf') }}"
+    owner: root
+    group: "{{ nginx_root_group }}"
+    mode: "0644"
+  loop: "{{ nginx_vhosts }}"
+  when: item.state | default('present') != 'absent'
+  notify: reload nginx
+
+- name: Remove default nginx vhost config file (if configured).
+  file:
+    path: "{{ nginx_default_vhost_path }}"
+    state: absent
+  when: nginx_remove_default_vhost | bool
+  notify: reload nginx
+
+# --- 5. Сервис ------------------------------------------------------------------
+- name: Ensure nginx service is running and enabled.
+  service:
+    name: nginx
+    state: "{{ nginx_service_state }}"
+    enabled: "{{ nginx_service_enabled }}"

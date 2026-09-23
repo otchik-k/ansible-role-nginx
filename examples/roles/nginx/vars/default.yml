@@ -1,0 +1,3 @@
+---
+nginx_root_group: root
+nginx_user: www-data
