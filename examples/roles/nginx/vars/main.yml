@@ -1,0 +1,117 @@
+---
+# ============================================================
+# КОНФИГУРАЦИЯ ВАШЕГО ПРОЕКТА — правьте только этот файл.
+#
+# vars/main.yml имеет ВЫСШИЙ приоритет в Ansible: эти значения
+# переопределяют defaults/main.yml и применяются всегда, когда
+# в плейбуке есть роль nginx. group_vars создавать не нужно.
+#
+# (Если когда-нибудь понадобится временное переопределение «снаружи»,
+# это можно сделать через extra-vars: ansible-playbook ... -e ...)
+# ============================================================
+
+# 1. Бэкенд-приложение (контейнер) — reverse proxy будет слать запросы сюда.
+#    Формат: "хост:порт". Варианты:
+#      - "127.0.0.1:8080"   если docker-compose пробрасывает порт на хост (ports: "8080:8080")
+#      - "backend:8080"     если nginx запущен внутри той же docker-сети
+nginx_upstream_servers:
+  - "127.0.0.1:8080"
+
+# 2. Домен (или IP сервера), по которому открывается приложение.
+#    Для проверки по IP без DNS достаточно указать IP — nginx примет любой Host.
+nginx_server_name: "app.example.com"
+
+# 3. Пути НА ХОСТЕ, куда контейнер монтирует volumes со статикой и загрузками:
+#      volumes:
+#        - ./public:/srv/app/public   # собранная статика фронта
+#        - ./media:/srv/app/media     # пользовательские загрузки
+nginx_app_static_root: "/srv/app/public"
+nginx_app_media_root: "/srv/app/media"
+
+# 4. Максимальный размер загружаемого файла (запросы больше → 413).
+nginx_client_max_body_size: "128m"
+
+# 5. Параметры прокси-кеша (ответов бэкенда):
+#    путь хранения / TTL успешных ответов / TTL 404
+nginx_proxy_cache_dir: "/var/cache/nginx/proxy"
+nginx_proxy_cache_max_size: "2g"
+nginx_proxy_cache_inactive: "60m"
+nginx_proxy_cache_valid_200: "10m"
+nginx_proxy_cache_valid_404: "1m"
+
+# 6. Если на сервере нет IPv6 — поставьте false.
+nginx_listen_ipv6: true
+
+# ---------- служебное: сборка upstream/vhost из значений выше ----------
+nginx_upstreams:
+  - name: app_backend
+    keepalive: 32
+    servers: "{{ nginx_upstream_servers }}"
+
+nginx_vhosts:
+  - listen: "80"
+    server_name: "{{ nginx_server_name }}"
+    filename: "app.conf"
+    root: "{{ nginx_app_static_root }}"
+    index: "index.html"
+    error_page: "404 /index.html"      # SPA-fallback
+    access_log: "/var/log/nginx/app.access.log"
+    extra_parameters: |
+      # --- Загрузки (media/uploads): раздача с диска + длинное кеширование ---
+      location /media/ {
+          alias {{ nginx_app_media_root }}/;
+          expires 30d;
+          add_header Cache-Control "public";
+          tcp_nodelay off;
+          tcp_nopush on;
+      }
+
+      # --- Статика фронтенда: без проксирования, агрессивно кешуемся --------
+      # Имена js/css от vite/CRA содержат content-hash → можно immutable.
+      location ~* \.(?:js|css|png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|map)$ {
+          try_files $uri @backend;
+          expires 1y;
+          add_header Cache-Control "public, immutable";
+          access_log off;
+      }
+
+      # --- Маршруты SPA ------------------------------------------------------
+      location / {
+          try_files $uri $uri/ @backend;
+      }
+
+      # --- Проксирование на бэкенд с прокси-кешем ----------------------------
+      location @backend {
+          proxy_cache app_cache;
+          proxy_cache_valid 200 301 302 {{ nginx_proxy_cache_valid_200 }};
+          proxy_cache_valid 404 {{ nginx_proxy_cache_valid_404 }};
+          proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+          proxy_cache_lock on;
+          proxy_cache_background_update on;
+          # Не кешировать авторизованные запросы (куки/авторизация бэкенда).
+          proxy_cache_bypass $http_cookie $http_authorization;
+          proxy_no_cache $http_cookie $http_authorization;
+          proxy_cache_key "$scheme$request_method$host$request_uri";
+          add_header X-Cache-Status $upstream_cache_status;
+
+          proxy_http_version 1.1;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Connection        "";
+          proxy_read_timeout 60s;
+          proxy_send_timeout 60s;
+      }
+
+      # Разрешить большие загрузки только на API-эндпоинтах.
+      location /api/upload {
+          client_max_body_size {{ nginx_client_max_body_size }};
+          proxy_pass http://app_backend;
+          proxy_request_buffering off;
+          proxy_http_version 1.1;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+      }

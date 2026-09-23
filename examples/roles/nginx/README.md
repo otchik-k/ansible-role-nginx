@@ -23,33 +23,34 @@
 
 ## Настройка
 
-Все параметры — обычные ansible-переменные со значениями по умолчанию в
-`defaults/main.yml`. Переопределите нужные в `group_vars/my_hosts.yml`:
+Конфигурация проекта — в файле `roles/nginx/vars/main.yml`. Это единственный
+файл, который нужно править: у `vars/` наивысший приоритет в Ansible, поэтому
+создавать `group_vars` и переопределять переменные снаружи не требуется.
 
 ```yaml
-nginx_vhosts:
-  - listen: "80"
-    server_name: "myapp.example.com"
-    filename: "myapp.conf"
-    root: "/srv/app/public"
-    extra_parameters: |
-      ...                # см. defaults/main.yml как образец
-
-nginx_upstreams:
-  - name: app_backend
-    servers: ["127.0.0.1:8080"]   # порт backend-контейнера
+# roles/nginx/vars/main.yml
+nginx_upstream_servers: ["127.0.0.1:8080"]   # адрес бэкенд-контейнера
+nginx_server_name: "myapp.example.com"       # ваш домен или IP сервера
+nginx_app_static_root: "/srv/app/public"     # volume со статикой фронта
+nginx_app_media_root: "/srv/app/media"       # volume с загрузками
+nginx_client_max_body_size: "128m"           # лимит размера загрузки
 ```
+
+Технические значения по умолчанию (worker_processes, gzip, пути) лежат в
+`defaults/main.yml` и обычно не требуют изменений. Если когда-нибудь понадобится
+разовое переопределение «снаружи» — используйте extra-vars:
+`ansible-playbook ... -e nginx_server_name=test.example.com`.
 
 Ключевые переменные:
 
 | Переменная | Назначение |
 |---|---|
-| `nginx_upstreams` | upstream на бэкенд-контейнер (keepalive) |
-| `nginx_vhosts` | vhost'ы: статика, SPA-fallback, @backend с proxy_cache |
-| `nginx_proxy_cache_path` | зона прокси-кеша (пустая строка = выключить) |
+| `nginx_upstream_servers` | адреса бэкенд-контейнера (host:port) |
+| `nginx_server_name` | домен/IP виртуального хоста |
 | `nginx_app_static_root` / `nginx_app_media_root` | каталоги из docker volumes |
-| `nginx_extra_http_options` | gzip и опции http {} |
 | `nginx_client_max_body_size` | лимит загрузок |
+| `nginx_proxy_cache_*` | размер зоны/TTL прокси-кеша |
+| `nginx_listen_ipv6` | слушать ли [::]:80 |
 
 ## Требования к хосту
 
